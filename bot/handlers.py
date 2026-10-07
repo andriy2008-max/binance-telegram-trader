@@ -4,24 +4,22 @@ import logging
 
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.error import Conflict, NetworkError, TimedOut
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 logger = logging.getLogger(__name__)
-
-# Keys used by bot.main for optional shared backends.
-DB_KEY = "db"
-REDIS_KEY = "redis"
-
-# Temporary simulated positions.
-# Nothing here is sent to Binance.
-POSITIONS = {}
 
 BOT_COMMANDS = (
     ("start", "Open trading menu"),
     ("long", "Open simulated LONG"),
     ("short", "Open simulated SHORT"),
     ("close", "Close simulated position"),
+    ("closeall", "Close all simulated positions"),
     ("status", "Show simulated positions"),
     ("help", "Show commands"),
 )
@@ -32,34 +30,39 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
         ["ℹ️ HELP"],
     ],
     resize_keyboard=True,
+    is_persistent=True,
 )
 
 HELP_TEXT = """🤖 Binance Signal Trader
 
-⚠️ SIMULATION MODE — no real orders.
+🧪 SIMULATION MODE
+No orders are sent to Binance.
 
 Commands:
 
 /long BTCUSDT 10
-Open simulated LONG for 10 USDT.
-
 /short BTCUSDT 10
-Open simulated SHORT for 10 USDT.
-
 /close BTCUSDT
-Close simulated position.
-
+/closeall
 /status
-Show open simulated positions.
+/help
 
 Examples:
+
 /long BTCUSDT 10
 /short ETHUSDT 20
-/close BTCUSDT
 """
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def get_positions(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    return context.user_data.setdefault("positions", {})
+
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
     message = update.effective_message
 
     if message is None:
@@ -69,24 +72,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🤖 Binance Signal Trader is running.\n\n"
         "🧪 SIMULATION MODE\n"
         "No orders are being sent to Binance.\n\n"
-        "Type /help to see trading commands.",
+        "Type /help to see commands.",
         reply_markup=MAIN_MENU_KEYBOARD,
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
     message = update.effective_message
 
     if message is not None:
         await message.reply_text(HELP_TEXT)
 
 
-async def long_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await open_position(update, context, "LONG")
+async def long_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
+    await open_position(
+        update,
+        context,
+        "LONG",
+    )
 
 
-async def short_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await open_position(update, context, "SHORT")
+async def short_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
+    await open_position(
+        update,
+        context,
+        "SHORT",
+    )
 
 
 async def open_position(
@@ -94,6 +117,7 @@ async def open_position(
     context: ContextTypes.DEFAULT_TYPE,
     side: str,
 ) -> None:
+
     message = update.effective_message
 
     if message is None:
@@ -105,19 +129,32 @@ async def open_position(
         )
         return
 
-    symbol = context.args[0].upper()
+    symbol = context.args[0].strip().upper()
+
+    if not symbol.isalnum():
+        await message.reply_text(
+            "❌ Invalid symbol."
+        )
+        return
 
     try:
         amount = float(context.args[1])
+
     except ValueError:
-        await message.reply_text("❌ Amount must be a number.")
+        await message.reply_text(
+            "❌ Amount must be a number."
+        )
         return
 
     if amount <= 0:
-        await message.reply_text("❌ Amount must be greater than 0.")
+        await message.reply_text(
+            "❌ Amount must be greater than 0."
+        )
         return
 
-    POSITIONS[symbol] = {
+    positions = get_positions(context)
+
+    positions[symbol] = {
         "side": side,
         "amount": amount,
     }
@@ -132,7 +169,11 @@ async def open_position(
     )
 
 
-async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def close_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
     message = update.effective_message
 
     if message is None:
@@ -144,9 +185,14 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    symbol = context.args[0].upper()
+    symbol = context.args[0].strip().upper()
 
-    position = POSITIONS.pop(symbol, None)
+    positions = get_positions(context)
+
+    position = positions.pop(
+        symbol,
+        None,
+    )
 
     if position is None:
         await message.reply_text(
@@ -155,33 +201,69 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await message.reply_text(
-        f"✅ SIMULATED POSITION CLOSED\n\n"
+        "✅ SIMULATED POSITION CLOSED\n\n"
         f"{symbol}\n"
         f"{position['side']}\n"
         f"{position['amount']:.2f} USDT"
     )
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def close_all(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
     message = update.effective_message
 
     if message is None:
         return
 
-    if not POSITIONS:
+    positions = get_positions(context)
+
+    count = len(positions)
+
+    positions.clear()
+
+    await message.reply_text(
+        f"✅ Closed {count} simulated position(s)."
+    )
+
+
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    positions = get_positions(context)
+
+    if not positions:
         await message.reply_text(
             "📊 No simulated positions are open."
         )
         return
 
-    lines = ["📊 SIMULATED POSITIONS\n"]
+    lines = [
+        "📊 SIMULATED POSITIONS",
+        "",
+    ]
 
-    for symbol, position in POSITIONS.items():
-        emoji = "🟢" if position["side"] == "LONG" else "🔴"
+    for symbol, position in positions.items():
+
+        emoji = (
+            "🟢"
+            if position["side"] == "LONG"
+            else "🔴"
+        )
 
         lines.append(
-            f"{emoji} {symbol}\n"
-            f"{position['side']} | {position['amount']:.2f} USDT\n"
+            f"{emoji} {symbol} — "
+            f"{position['side']} — "
+            f"{position['amount']:.2f} USDT"
         )
 
     await message.reply_text(
@@ -189,22 +271,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
-async def close_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
+async def menu_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
 
-    if message is None:
-        return
-
-    count = len(POSITIONS)
-
-    POSITIONS.clear()
-
-    await message.reply_text(
-        f"❌ Closed {count} simulated position(s)."
-    )
-
-
-async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
 
     if message is None or not message.text:
@@ -213,21 +284,35 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = message.text.strip()
 
     if text == "📊 STATUS":
-        await status_command(update, context)
+        await status_command(
+            update,
+            context,
+        )
 
     elif text == "❌ CLOSE ALL":
-        await close_all(update, context)
+        await close_all(
+            update,
+            context,
+        )
 
     elif text == "ℹ️ HELP":
-        await help_command(update, context)
+        await help_command(
+            update,
+            context,
+        )
 
 
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def unknown_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
     message = update.effective_message
 
     if message is not None:
         await message.reply_text(
-            "❓ Unknown command.\nType /help."
+            "❓ Unknown command.\n"
+            "Type /help."
         )
 
 
@@ -235,59 +320,96 @@ async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+
     error = context.error
 
     if isinstance(
         error,
-        (Conflict, NetworkError, TimedOut),
+        (
+            Conflict,
+            NetworkError,
+            TimedOut,
+        ),
     ):
         logger.warning(
             "Transient Telegram error: %s",
-            error,
+            type(error).__name__,
         )
         return
 
     logger.exception(
-        "Error while processing update: %s",
-        update,
-        exc_info=error,
+        "Unhandled Telegram bot error"
     )
 
-    if isinstance(update, Update) and update.effective_message:
+    if (
+        isinstance(update, Update)
+        and update.effective_message
+    ):
         await update.effective_message.reply_text(
-            "Sorry, an error occurred while processing your message."
+            "❌ An internal error occurred. Try again."
         )
 
 
-async def set_bot_commands(application: Application) -> None:
+async def set_bot_commands(
+    application: Application,
+) -> None:
+
     await application.bot.set_my_commands(
         BOT_COMMANDS
     )
 
 
-def register_handlers(application: Application) -> None:
+def register_handlers(
+    application: Application,
+) -> None:
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start,
+        )
     )
 
     application.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "help",
+            help_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("long", long_command)
+        CommandHandler(
+            "long",
+            long_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("short", short_command)
+        CommandHandler(
+            "short",
+            short_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("close", close_command)
+        CommandHandler(
+            "close",
+            close_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("status", status_command)
+        CommandHandler(
+            "closeall",
+            close_all,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "status",
+            status_command,
+        )
     )
 
     application.add_handler(
