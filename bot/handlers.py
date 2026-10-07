@@ -1,164 +1,221 @@
-"""Telegram update handlers."""
+"""Telegram handlers for Binance Signal Trader — SIMULATION MODE."""
 
 import logging
 
 from telegram import ReplyKeyboardMarkup, Update
-from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-
-from bot import cache, db
-
 
 logger = logging.getLogger(__name__)
 
-# Keys used to read shared connections from Application.bot_data.
-DB_KEY = "db"
-REDIS_KEY = "redis"
-
-# In-memory fallback for the per-user message counter when Redis is unavailable.
-# Process-local and non-persistent, but keeps the feature working for local testing.
-_LOCAL_MESSAGE_COUNTS: dict[int, int] = {}
+# Temporary simulated positions.
+# Nothing here is sent to Binance.
+POSITIONS = {}
 
 BOT_COMMANDS = (
-    ("start", "Show the main menu"),
-    ("help", "Show help"),
-    ("about", "Show bot information"),
-    ("ping", "Check bot status"),
+    ("start", "Open trading menu"),
+    ("long", "Open simulated LONG"),
+    ("short", "Open simulated SHORT"),
+    ("close", "Close simulated position"),
+    ("status", "Show simulated positions"),
+    ("help", "Show commands"),
 )
-
-MENU_HELP = "Help"
-MENU_ABOUT = "About"
-MENU_PING = "Ping"
 
 MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [[MENU_HELP, MENU_ABOUT], [MENU_PING]],
+    [
+        ["📊 STATUS", "❌ CLOSE ALL"],
+        ["ℹ️ HELP"],
+    ],
     resize_keyboard=True,
-    is_persistent=True,
-    input_field_placeholder="Choose a menu item",
 )
 
-HELP_TEXT = """Available commands:
-/start - Start the bot
-/help - Show help
-/about - Show bot information
-/ping - Check bot status
+HELP_TEXT = """🤖 Binance Signal Trader
 
-Send a normal text message and the bot will echo it back."""
+⚠️ SIMULATION MODE — no real orders.
+
+Commands:
+
+/long BTCUSDT 10
+Open simulated LONG for 10 USDT.
+
+/short BTCUSDT 10
+Open simulated SHORT for 10 USDT.
+
+/close BTCUSDT
+Close simulated position.
+
+/status
+Show open simulated positions.
+
+Examples:
+/long BTCUSDT 10
+/short ETHUSDT 20
+/close BTCUSDT
+"""
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    user = update.effective_user
-    if message is None or user is None:
+    if message is None:
         return
 
-    # Persist the user in PostgreSQL when available (insert on first contact,
-    # refresh otherwise). Without a database the bot still greets the user.
-    pool = context.bot_data.get(DB_KEY)
-    is_new = True
-    if pool is not None:
-        is_new = await db.upsert_user(pool, user.id, user.username, user.first_name)
-
-    name = user.first_name if user.first_name else "friend"
-    greeting = "Welcome" if is_new else "Welcome back"
     await message.reply_text(
-        f"{greeting}, {name}! The bot is running.\n\n"
-        "Choose a menu button below or type /help to see the available commands.",
+        "🤖 Binance Signal Trader is running.\n\n"
+        "🧪 SIMULATION MODE\n"
+        "No orders are being sent to Binance.\n\n"
+        "Type /help to see trading commands.",
         reply_markup=MAIN_MENU_KEYBOARD,
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
+    message = update.effective_message
+    if message:
+        await message.reply_text(HELP_TEXT)
+
+
+async def long_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await open_position(update, context, "LONG")
+
+
+async def short_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await open_position(update, context, "SHORT")
+
+
+async def open_position(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    side: str,
+) -> None:
+
     message = update.effective_message
     if message is None:
         return
 
-    await message.reply_text(HELP_TEXT)
-
-
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
-    message = update.effective_message
-    if message is None:
+    if len(context.args) != 2:
+        await message.reply_text(
+            f"Usage:\n/{side.lower()} BTCUSDT 10"
+        )
         return
+
+    symbol = context.args[0].upper()
+
+    try:
+        amount = float(context.args[1])
+    except ValueError:
+        await message.reply_text("❌ Amount must be a number.")
+        return
+
+    if amount <= 0:
+        await message.reply_text("❌ Amount must be greater than 0.")
+        return
+
+    POSITIONS[symbol] = {
+        "side": side,
+        "amount": amount,
+    }
+
+    emoji = "🟢" if side == "LONG" else "🔴"
 
     await message.reply_text(
-        "This bot is built with python-telegram-bot and is ready to deploy on Railway."
+        f"{emoji} SIMULATED {side}\n\n"
+        f"Symbol: {symbol}\n"
+        f"Amount: {amount:.2f} USDT\n\n"
+        "⚠️ No Binance order was placed."
     )
 
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
     message = update.effective_message
     if message is None:
         return
 
-    # Demonstrate a short-lived Redis cache: warm within the TTL, cold otherwise.
-    # Without Redis we simply reply with a plain pong.
-    client = context.bot_data.get(REDIS_KEY)
-    if client is None:
-        await message.reply_text("pong")
+    if len(context.args) != 1:
+        await message.reply_text("Usage:\n/close BTCUSDT")
         return
 
-    cached = await cache.get_or_set_ping(client)
-    source = "cached" if cached else "fresh"
-    await message.reply_text(f"pong ({source})")
+    symbol = context.args[0].upper()
+
+    position = POSITIONS.pop(symbol, None)
+
+    if position is None:
+        await message.reply_text(
+            f"ℹ️ No simulated position for {symbol}."
+        )
+        return
+
+    await message.reply_text(
+        f"✅ SIMULATED POSITION CLOSED\n\n"
+        f"{symbol}\n"
+        f"{position['side']}\n"
+        f"{position['amount']:.2f} USDT"
+    )
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+    message = update.effective_message
+    if message is None:
+        return
+
+    if not POSITIONS:
+        await message.reply_text(
+            "📊 No simulated positions are open."
+        )
+        return
+
+    lines = ["📊 SIMULATED POSITIONS\n"]
+
+    for symbol, position in POSITIONS.items():
+        emoji = "🟢" if position["side"] == "LONG" else "🔴"
+
+        lines.append(
+            f"{emoji} {symbol}\n"
+            f"{position['side']} | {position['amount']:.2f} USDT\n"
+        )
+
+    await message.reply_text("\n".join(lines))
+
+
+async def close_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+    message = update.effective_message
+    if message is None:
+        return
+
+    count = len(POSITIONS)
+    POSITIONS.clear()
+
+    await message.reply_text(
+        f"❌ Closed {count} simulated position(s)."
+    )
 
 
 async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
     message = update.effective_message
     if message is None or not message.text:
         return
 
     text = message.text.strip()
-    if text == MENU_HELP:
+
+    if text == "📊 STATUS":
+        await status_command(update, context)
+
+    elif text == "❌ CLOSE ALL":
+        await close_all(update, context)
+
+    elif text == "ℹ️ HELP":
         await help_command(update, context)
-    elif text == MENU_ABOUT:
-        await about(update, context)
-    elif text == MENU_PING:
-        await ping(update, context)
-
-
-async def echo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    user = update.effective_user
-    if message is None or not message.text or user is None:
-        return
-
-    # Track how many messages each user has sent using a Redis counter, falling
-    # back to an in-memory counter when Redis is unavailable.
-    client = context.bot_data.get(REDIS_KEY)
-    if client is not None:
-        count = await cache.increment_message_count(client, user.id)
-    else:
-        count = _LOCAL_MESSAGE_COUNTS[user.id] = _LOCAL_MESSAGE_COUNTS.get(user.id, 0) + 1
-    await message.reply_text(f"You sent (#{count}):\n{message.text}")
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
+
     message = update.effective_message
-    if message is None:
-        return
 
-    await message.reply_text("Unknown command. Type /help for assistance.")
-
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    error = context.error
-
-    # Transient polling/network errors (e.g. a brief 409 Conflict during a
-    # Railway redeploy when two instances overlap) are self-healing, so log them
-    # as warnings without a traceback instead of alarming-looking errors.
-    if isinstance(error, (Conflict, NetworkError, TimedOut)):
-        logger.warning("Transient Telegram error: %s", error)
-        return
-
-    logger.exception("Error while processing update: %s", update, exc_info=error)
-
-    if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text(
-            "Sorry, an error occurred while processing your message."
+    if message:
+        await message.reply_text(
+            "❓ Unknown command.\nType /help."
         )
 
 
@@ -167,12 +224,22 @@ async def set_bot_commands(application: Application) -> None:
 
 
 def register_handlers(application: Application) -> None:
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("about", about))
-    application.add_handler(CommandHandler("ping", ping))
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+
+    application.add_handler(CommandHandler("long", long_command))
+    application.add_handler(CommandHandler("short", short_command))
+    application.add_handler(CommandHandler("close", close_command))
+    application.add_handler(CommandHandler("status", status_command))
+
     application.add_handler(
-        MessageHandler(filters.Regex(f"^({MENU_HELP}|{MENU_ABOUT}|{MENU_PING})$"), menu_button)
+        MessageHandler(
+            filters.Regex(r"^(📊 STATUS|❌ CLOSE ALL|ℹ️ HELP)$"),
+            menu_button,
+        )
     )
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_message))
+
+    application.add_handler(
+        MessageHandler(filters.COMMAND, unknown_command)
+    )
