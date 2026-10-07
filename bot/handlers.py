@@ -3,9 +3,15 @@
 import logging
 
 from telegram import ReplyKeyboardMarkup, Update
+from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+
 logger = logging.getLogger(__name__)
+
+# Keys used by bot.main for optional shared backends.
+DB_KEY = "db"
+REDIS_KEY = "redis"
 
 # Temporary simulated positions.
 # Nothing here is sent to Binance.
@@ -55,6 +61,7 @@ Examples:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
+
     if message is None:
         return
 
@@ -69,7 +76,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    if message:
+
+    if message is not None:
         await message.reply_text(HELP_TEXT)
 
 
@@ -86,8 +94,8 @@ async def open_position(
     context: ContextTypes.DEFAULT_TYPE,
     side: str,
 ) -> None:
-
     message = update.effective_message
+
     if message is None:
         return
 
@@ -125,13 +133,15 @@ async def open_position(
 
 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-
     message = update.effective_message
+
     if message is None:
         return
 
     if len(context.args) != 1:
-        await message.reply_text("Usage:\n/close BTCUSDT")
+        await message.reply_text(
+            "Usage:\n/close BTCUSDT"
+        )
         return
 
     symbol = context.args[0].upper()
@@ -153,8 +163,8 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-
     message = update.effective_message
+
     if message is None:
         return
 
@@ -174,16 +184,19 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"{position['side']} | {position['amount']:.2f} USDT\n"
         )
 
-    await message.reply_text("\n".join(lines))
+    await message.reply_text(
+        "\n".join(lines)
+    )
 
 
 async def close_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-
     message = update.effective_message
+
     if message is None:
         return
 
     count = len(POSITIONS)
+
     POSITIONS.clear()
 
     await message.reply_text(
@@ -192,8 +205,8 @@ async def close_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-
     message = update.effective_message
+
     if message is None or not message.text:
         return
 
@@ -210,36 +223,85 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-
     message = update.effective_message
 
-    if message:
+    if message is not None:
         await message.reply_text(
             "❓ Unknown command.\nType /help."
         )
 
 
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    error = context.error
+
+    if isinstance(
+        error,
+        (Conflict, NetworkError, TimedOut),
+    ):
+        logger.warning(
+            "Transient Telegram error: %s",
+            error,
+        )
+        return
+
+    logger.exception(
+        "Error while processing update: %s",
+        update,
+        exc_info=error,
+    )
+
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "Sorry, an error occurred while processing your message."
+        )
+
+
 async def set_bot_commands(application: Application) -> None:
-    await application.bot.set_my_commands(BOT_COMMANDS)
+    await application.bot.set_my_commands(
+        BOT_COMMANDS
+    )
 
 
 def register_handlers(application: Application) -> None:
+    application.add_handler(
+        CommandHandler("start", start)
+    )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(
+        CommandHandler("help", help_command)
+    )
 
-    application.add_handler(CommandHandler("long", long_command))
-    application.add_handler(CommandHandler("short", short_command))
-    application.add_handler(CommandHandler("close", close_command))
-    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(
+        CommandHandler("long", long_command)
+    )
+
+    application.add_handler(
+        CommandHandler("short", short_command)
+    )
+
+    application.add_handler(
+        CommandHandler("close", close_command)
+    )
+
+    application.add_handler(
+        CommandHandler("status", status_command)
+    )
 
     application.add_handler(
         MessageHandler(
-            filters.Regex(r"^(📊 STATUS|❌ CLOSE ALL|ℹ️ HELP)$"),
+            filters.Regex(
+                r"^(📊 STATUS|❌ CLOSE ALL|ℹ️ HELP)$"
+            ),
             menu_button,
         )
     )
 
     application.add_handler(
-        MessageHandler(filters.COMMAND, unknown_command)
+        MessageHandler(
+            filters.COMMAND,
+            unknown_command,
+        )
     )
